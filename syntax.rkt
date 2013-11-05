@@ -6,13 +6,12 @@
   (let* ([code (transcribe-extended-process-form epf)]
          [code-string (pretty-format (syntax->datum code))]
          [epf-string (pretty-format (cadr (syntax->datum epf)))]
-         [delim-string (list->string (build-list (string-length epf-string) (λ (n) #\-)))])
+         [delim-string (list->string (build-list (string-length epf-string) (λ (n) #\_)))])
     (displayln
-     (format "Transcribing:~n ~a ~n ~a ~n ~a ~n ~a"
+     (format "Transcribing:~n ~a ~n ~a ~n ~a"
              epf-string
              delim-string
-             code-string
-             delim-string))
+             code-string))
     (datum->syntax code "" code)))
 
 ;; (define-syntax (exec-epf epf)
@@ -20,14 +19,15 @@
 ;;     (pretty-print (syntax->datum code))
 ;;     code))
 
-
 (define-syntax-rule (& . epf)
   (fork (λ () (exec-epf . epf))))
 
 (define-syntax-rule (run . epf)
   (wait (& . epf)))
 
-;; syntax-helpers
+;; TODO:
+;; I feel like these should be macros, so each returns syntax and
+;; gets called from runtime
 (begin-for-syntax
 
  ;; map a list of expressions to a begin form, flattening nested begins
@@ -96,53 +96,18 @@
      [(>> fdes fname) #'(shell-open `fname write+append+create fdes)]
      [(>> fname)      #'(shell-open `fname write+append+create 1)]
 
-     ;; input comes from the printed representation of exp result
-     ;; exp-value is converted to its printed representation using the display
-     [(<< fdes exp) #'(move->fdes (open-string-source exp) fdes)] ;move->fdes is just dup2
+     [(<< fdes exp) #'(move->fdes (open-string-source exp) fdes)]
      [(<< exp)      #'(move->fdes (open-string-source exp) 0)]
 
-     [(= fdes fdes/port) #'(dup->fdes `fdes/port fdes)] ;dup->fdes is dup2 with some crazy port manipulation
+     [(= fdes fdes/port) #'(dup->fdes `fdes/port fdes)]
      [(- fdes/port)      #'(close `fdes/port)]
      [ stdports          #'(stdports->stdio)]
+
      [ _                 (raise-syntax-error #f "Unknown I/O redirection" redir)]))
-
- ;; begin-for-syntax END
+ ;; END begin-for-syntax END
  )
-
 
 ;;debugging and testing
 (define infile "ReadFromFile")
 (define errfile "Errfile")
 (exec-epf ((\| (tail -10) (cat) (grep ".rkt")) (< ,infile) (>> 2 ,errfile)))
-
-
-
-
-
-
-
-
-;; (define (close port/fd)
-;;   ((cond ((integer? port/fd)     close-fdes) ;low level fdes manipulation
-;;          ((output-port? port/fd) close-output-port)
-;;          ((input-port?  port/fd) close-input-port)
-;;          (else (raise-argument-error '"- or close" "integer file-descriptor or port" port/fd)))
-;;    port/fd))
-
-;; (define (stdports->stdio)
-;;   (dup (current-input-port)  0)
-;;   (dup (current-output-port) 1)
-;;   (dup (current-error-port)   2))
-
-;; (define (open-string-source obj)
-;;   (receive (inp outp) (temp-file-channel) ;s48 hack, replace with Racket (make-pipe)
-;;     (display obj outp)
-;;     (close-output-port outp)
-;;     inp))
-
-;; (define (temp-file-channel)
-;;   (let* ((fname (create-temp-file))
-;;          (iport (open-input-file fname))
-;;          (oport (open-output-file fname)))
-;;     (delete-file fname)
-;;     (values iport oport)))
