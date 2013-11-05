@@ -1,23 +1,34 @@
 #lang racket
 (require macro-debugger/expand)
+(require macro-debugger/stepper-text)
 (require (for-syntax racket/pretty))
 
-(define-syntax (exec-epf epf)
-  (let* ([code (transcribe-extended-process-form epf)]
-         [code-string (pretty-format (syntax->datum code))]
-         [epf-string (pretty-format (cadr (syntax->datum epf)))]
-         [delim-string (list->string (build-list (string-length epf-string) (λ (n) #\_)))])
-    (displayln
-     (format "Transcribing:~n ~a ~n ~a ~n ~a"
-             epf-string
-             delim-string
-             code-string))
-    (datum->syntax code "" code)))
+;;; Racket way
+;;; ==========
+;;; Racket's OS facilities
+;;; * subprocess
+;;; * find-executable-path
 
-;; (define-syntax (exec-epf epf)
-;;   (let ([code (transcribe-extended-process-form epf)])
-;;     (pretty-print (syntax->datum code))
-;;     code))
+;;; Racket's file-stream ports:
+;;; * current-...-port       (parameter)
+;;; * with-input-from-file
+;;; * with-output-to-file
+
+;;; SCSH way
+;;; ========
+;;; every port is mapped to a fdes
+;;; current mappings are preserved in a table
+;;; fdes aware IO with calls to fdes-move and dup2
+;;; `http://www.scsh.net/docu/html/man-Z-H-1.html#node_toc_node_sec_2.1.1'
+
+;;; ==================================================
+;;; In this branch we depart from Unix almost entirely
+;;; don't keep track of Unix-level fdes mapping and
+;;; use only Racket fairly abstract facilities.
+;;; ==================================================
+
+(define-syntax (exec-epf epf)
+  (transcribe-extended-process-form epf))
 
 (define-syntax-rule (& . epf)
   (fork (λ () (exec-epf . epf))))
@@ -25,9 +36,9 @@
 (define-syntax-rule (run . epf)
   (wait (& . epf)))
 
-;; TODO:
-;; I feel like these should be macros, so each returns syntax and
-;; gets called from runtime
+;;; ==================================================
+;;; all transcribe- functions return syntax-objects
+
 (begin-for-syntax
 
  ;; map a list of expressions to a begin form, flattening nested begins
@@ -46,16 +57,15 @@
      [ begin (list)]
      [ e (list #'e)]))
 
- ;; all transcribe- functions must return syntax-objects
  (define (transcribe-extended-process-form epf)
    (syntax-case epf ()
-     ([_ (pf redir ...)]
+     [(_ (pf redir ...))
       (let ([redirs (map transcribe-redirection (syntax->list #'(redir ...)))]
             [pf (transcribe-process-form #'pf)])
         (or pf
             (not (null? redirs))
             (raise-syntax-error #f "empty extended process form" epf))
-        (blockify `(,@redirs ,pf))))))
+        (blockify `(,@redirs ,pf)))]))
 
  ;; Racket reader treats | special, escaping it for now with \|
  ;; syntax -> syntax
@@ -70,7 +80,8 @@
 
  ;; syntax -> syntax
  (define (transcribe-begin-process-form body)
-   #'(with-stdio-ports* (thunk . body)))
+   ;;   #'(with-stdio-ports* (thunk . body))
+   #`(begin #,@body))
 
  ;; syntax -> syntax
  (define (transcribe-simple-pipeline pfs)
@@ -87,14 +98,14 @@
  ;; syntax -> syntax
  (define (transcribe-redirection redir)
    (syntax-case redir (< > << >> = - stdports)
-     [(< fdes fname) #'(shell-open `fname read fdes)] ;shell-open calls s48-specific file-open - replace with racket
-     [(< fname)      #'(shell-open `fname read 0)]
+     [(< fdes fname) #'(shell-open `fname 'read fdes)] ;shell-open is dup2 in scsh
+     [(< fname)      #'(shell-open `fname 'read 0)]
 
-     [(> fdes fname) #'(shell-open `fname create+trunc fdes)]
-     [(> fname)      #'(shell-open `fname create+trunc 1)]
+     [(> fdes fname) #'(shell-open `fname 'create+trunc fdes)]
+     [(> fname)      #'(shell-open `fname 'create+trunc 1)]
 
-     [(>> fdes fname) #'(shell-open `fname write+append+create fdes)]
-     [(>> fname)      #'(shell-open `fname write+append+create 1)]
+     [(>> fdes fname) #'(shell-open `fname 'write+append+create fdes)]
+     [(>> fname)      #'(shell-open `fname 'write+append+create 1)]
 
      [(<< fdes exp) #'(move->fdes (open-string-source exp) fdes)]
      [(<< exp)      #'(move->fdes (open-string-source exp) 0)]
@@ -107,7 +118,38 @@
  ;; END begin-for-syntax END
  )
 
-;;debugging and testing
+;;; Debugging and testing
+;;; =====================
+(define (show stx . hide)
+  (printf "~n~a~n~a~nExpansion:~n~a"
+          (pretty-format (syntax->datum stx))
+          (list->string (build-list 75 (λ (n) #\_)))
+          (pretty-format (syntax->datum (expand/hide stx hide)))))
+
+(define (test stx . hide)
+  (apply show stx hide)
+  (printf "~nResult:~n")
+  (eval-syntax stx))
+
+(define shell-open (compose displayln list))
+(define fork/pipe (compose displayln list))
+(define (exec-path prog . rest) (displayln (append (list "executing" prog) rest)))
+
+;;; Test-cases
+;;; ==========
 (define infile "ReadFromFile")
 (define errfile "Errfile")
-(exec-epf ((\| (tail -10) (cat) (grep ".rkt")) (< ,infile) (>> 2 ,errfile)))
+
+(define test-cases
+  (list
+   ;;case1
+   #'(exec-epf ((\| (tail -10) (cat) (grep ".rkt")) (< ,infile) (>> 2 ,errfile)))
+   ;;case2
+   #'(exec-epf
+      ((begin
+         (let* ((input-line "Some lone")
+                (fmtline (format "Hello ~a" input-line)))
+           (exec-epf ((\| (tail -10) (cat) (grep ".rkt")) (< ,infile) (>> 2 ,errfile))))
+         )))))
+
+(map test test-cases)
