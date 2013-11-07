@@ -1,31 +1,8 @@
 #lang racket
-(require macro-debugger/expand)
-(require macro-debugger/stepper-text)
-(require (for-syntax racket/pretty))
-
-;;; Racket way
-;;; ==========
-;;; Racket's OS facilities
-;;; * subprocess
-;;; * find-executable-path
-
-;;; Racket's file-stream ports:
-;;; * current-...-port       (parameter)
-;;; * with-input-from-file
-;;; * with-output-to-file
-
-;;; SCSH way
-;;; ========
-;;; every port is mapped to a fdes
-;;; current mappings are preserved in a table
-;;; fdes aware IO with calls to fdes-move and dup2
-;;; `http://www.scsh.net/docu/html/man-Z-H-1.html#node_toc_node_sec_2.1.1'
-
-;;; ==================================================
-;;; In this branch we depart from Unix almost entirely
-;;; don't keep track of Unix-level fdes mapping and
-;;; use only Racket fairly abstract facilities.
-;;; ==================================================
+(require macro-debugger/expand
+         macro-debugger/stepper-text
+         (for-syntax racket/pretty)
+         racket/runtime-path)
 
 (define-syntax (exec-epf epf)
   (transcribe-extended-process-form epf))
@@ -36,10 +13,11 @@
 (define-syntax-rule (run . epf)
   (wait (& . epf)))
 
+(begin-for-syntax
+
 ;;; ==================================================
 ;;; all transcribe- functions return syntax-objects
-
-(begin-for-syntax
+;;; ==================================================
 
  ;; map a list of expressions to a begin form, flattening nested begins
  ;; (list #'(begin 3 4) #'5 #'(begin 6) ) -> #'(begin 3 4 5 6)
@@ -115,9 +93,10 @@
      [ stdports          #'(stdports->stdio)]
 
      [ _                 (raise-syntax-error #f "Unknown I/O redirection" redir)]))
- ;; END begin-for-syntax END
- )
 
+ ) ;begin-for-syntax
+
+;;; =====================
 ;;; Debugging and testing
 ;;; =====================
 (define (show stx . hide)
@@ -126,7 +105,7 @@
           (list->string (build-list 75 (λ (n) #\_)))
           (pretty-format (syntax->datum (expand/hide stx hide)))))
 
-(define (test stx . hide)
+(define (test1 stx . hide)
   (apply show stx hide)
   (printf "~nResult:~n")
   (eval-syntax stx))
@@ -139,17 +118,49 @@
 ;;; ==========
 (define infile "ReadFromFile")
 (define errfile "Errfile")
+(define-runtime-path skish-dir ".")
+
+;; (test) will run all cases in test-cases
+;; (test 2 4 5) will run only these cases
+(define (test . numlist)
+  (if (not (empty? numlist))
+      (for ((test (in-list numlist)))
+        (test1 (list-ref test-cases (sub1 test))))
+      (map test1 test-cases)))
 
 (define test-cases
   (list
    ;;case1
    #'(exec-epf ((\| (tail -10) (cat) (grep ".rkt")) (< ,infile) (>> 2 ,errfile)))
+
    ;;case2
    #'(exec-epf
       ((begin
          (let* ((input-line "Some lone")
                 (fmtline (format "Hello ~a" input-line)))
            (exec-epf ((\| (tail -10) (cat) (grep ".rkt")) (< ,infile) (>> 2 ,errfile))))
-         )))))
+         )))
 
-(map test test-cases)
+   ;;case3
+   #'(exec-epf
+      ((ls)))
+
+   ;;case4
+   #'(exec-epf
+      ((ls ,(path->string skish-dir))))
+
+   ;;case5
+   #'(exec-epf
+      ((\| (ls) (grep "rkt"))))
+
+   ;;case6
+   #'(exec-epf
+      ((begin
+         (displayln "Hello world")) (> OUTFILE)))
+
+   ;;case7
+   #'(exec-epf
+      ((pipe (ls)
+             (begin (display (read-line)))
+             (cat))))
+   ))

@@ -14,9 +14,6 @@
 ;;; run command in a separate shell process
 
 
-
-
-
 ;;; Possible low-level implementation
 ;;; combine to get `subprocess' + `find-executable-path'
 
