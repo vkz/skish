@@ -46,7 +46,6 @@
         (blockify `(,@redirs ,pf)))]))
 
  ;; Racket reader treats | special, escaping it for now with \|
- ;; syntax -> syntax
  (define (transcribe-process-form pf)
    (syntax-case pf (begin \| epf pipe)
      [(begin arg ...)   (transcribe-begin-process-form #'(arg ...))]
@@ -56,24 +55,34 @@
      [(proc arg  ...) #'(apply exec-path `(proc arg ...))]
      [ _                (raise-syntax-error #f "Illegal process form" pf)]))
 
- ;; syntax -> syntax
  (define (transcribe-begin-process-form body)
    ;;   #'(with-stdio-ports* (thunk . body))
    #`(begin #,@body))
-
- ;; syntax -> syntax
  (define (transcribe-simple-pipeline pfs)
    (syntax-case pfs ()
      [(pf ...)
       (let* [(chunks (reverse (map transcribe-process-form (syntax->list #'(pf ...)))))
              (last-pf (car chunks))
              (first-pfs (reverse (cdr chunks)))
-             (forkers (map (λ (chunk)
-                              #`(fork/pipe (thunk #,chunk)))
-                           first-pfs))]
+             (begin-form?
+              (λ (f) (equal? 'begin (syntax->datum (car (syntax->list f))))))
+             (fork-chunk
+              (λ (chunk) #`(fork/pipe (thunk #,chunk) (begin-form? chunk))))
+             (forkers (map fork-chunk first-pfs))]
         (blockify `(,@forkers ,last-pf)))]))
 
- ;; syntax -> syntax
+ ;; ;; syntax -> syntax
+ ;; (define (transcribe-simple-pipeline pfs)
+ ;;   (syntax-case pfs ()
+ ;;     [(pf ...)
+ ;;      (let* [(chunks (reverse (map transcribe-process-form (syntax->list #'(pf ...)))))
+ ;;             (last-pf (car chunks))
+ ;;             (first-pfs (reverse (cdr chunks)))
+ ;;             (forkers (map (λ (chunk)
+ ;;                              #`(fork/pipe (thunk #,chunk)))
+ ;;                           first-pfs))]
+ ;;        (blockify `(,@forkers ,last-pf)))]))
+
  (define (transcribe-redirection redir)
    (syntax-case redir (< > << >> = - stdports)
      [(< fdes fname) #'(shell-open `fname 'read fdes)] ;shell-open is dup2 in scsh
@@ -99,20 +108,56 @@
 ;;; =====================
 ;;; Debugging and testing
 ;;; =====================
-(define (show stx . hide)
-  (printf "~n~a~n~a~nExpansion:~n~a"
-          (pretty-format (syntax->datum stx))
-          (list->string (build-list 75 (λ (n) #\_)))
-          (pretty-format (syntax->datum (expand/hide stx hide)))))
-
-(define (test1 stx . hide)
-  (apply show stx hide)
-  (printf "~nResult:~n")
-  (eval-syntax stx))
 
 (define shell-open (compose displayln list))
-(define fork/pipe (compose displayln list))
-(define (exec-path prog . rest) (displayln (append (list "executing" prog) rest)))
+;;(define fork/pipe (compose displayln list))
+
+(define (fork/pipe stuff [inline? #f])
+  (if inline?
+      (let-values ([(i o) (make-pipe)])
+        (parameterize ((current-output-port o))
+          (stuff)
+          (close-output-port o))
+        (current-input-port i))
+
+      (let-values ([(proc <-ch) (stuff)])
+        (current-input-port <-ch))))
+
+(define (exec-path prog . args)
+
+  (define prog-path (path->string (find-executable-path (stringify prog))))
+  ;; (define arglist (map stringify args))
+
+  (write prog)
+  (write args)
+
+  ;; (define-values (proc <-ch _ __)
+  ;;   (apply subprocess #f #f #f prog-path arglist))
+
+
+  (define-values (p <-ch out err)
+    (apply subprocess #f #f #f prog-path (map stringify args)))
+
+
+  ;; (define-values (p <-ch out err)
+  ;;   (apply subprocess #f #f #f (path->string (find-executable-path (stringify prog))) (map stringify '(-a))))
+
+  ;;  (values proc <-ch)
+
+  (for/list ((line (in-lines <-ch)))
+    line)
+
+
+
+  )
+
+(define (stringify dat)
+  (let ((o (open-output-string)))
+    (display dat o)
+    (get-output-string o)))
+
+;; (define (exec-path prog . rest)
+;;   (displayln (append (list "executing" prog) rest)))
 
 ;;; Test-cases
 ;;; ==========
@@ -120,20 +165,30 @@
 (define errfile "Errfile")
 (define-runtime-path skish-dir ".")
 
+(define (show stx)
+  (printf "~n~a~n~a~nExpansion:~n~a"
+          (pretty-format (syntax->datum stx))
+          (list->string (build-list 75 (λ (n) #\_)))
+          (pretty-format (syntax->datum (expand/hide stx '())))))
+
+(define (test1 stx)
+  (show stx)
+  (printf "~nResult:~n")
+  (eval-syntax stx))
+
 ;; (test) will run all cases in test-cases
 ;; (test 2 4 5) will run only these cases
-(define (test . numlist)
-  (if (not (empty? numlist))
-      (for ((test (in-list numlist)))
-        (test1 (list-ref test-cases (sub1 test))))
-      (map test1 test-cases)))
+(define (test . nlist)
+
+  (for/list ((n (in-list nlist)))
+    (test1 (list-ref test-cases n))))
 
 (define test-cases
   (list
-   ;;case1
+   ;;case0
    #'(exec-epf ((\| (tail -10) (cat) (grep ".rkt")) (< ,infile) (>> 2 ,errfile)))
 
-   ;;case2
+   ;;case1
    #'(exec-epf
       ((begin
          (let* ((input-line "Some lone")
@@ -141,24 +196,24 @@
            (exec-epf ((\| (tail -10) (cat) (grep ".rkt")) (< ,infile) (>> 2 ,errfile))))
          )))
 
-   ;;case3
+   ;;case2
    #'(exec-epf
       ((ls)))
 
-   ;;case4
+   ;;case3
    #'(exec-epf
       ((ls ,(path->string skish-dir))))
 
-   ;;case5
+   ;;case4
    #'(exec-epf
-      ((\| (ls) (grep "rkt"))))
+      ((\| (ls -a) (grep "rkt"))))
 
-   ;;case6
+   ;;case5
    #'(exec-epf
       ((begin
          (displayln "Hello world")) (> OUTFILE)))
 
-   ;;case7
+   ;;case6
    #'(exec-epf
       ((pipe (ls)
              (begin (display (read-line)))
