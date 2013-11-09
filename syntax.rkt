@@ -113,6 +113,11 @@
 ;;(define fork/pipe (compose displayln list))
 
 (define (fork/pipe stuff [inline? #f])
+
+  ;; another possibility is running (begin ..) code
+  ;; in a new Racket process (subprocess . . . "racket" "-e" ...)
+  ;; spawning another VM could be too much overhead
+
   (if inline?
       (let-values ([(i o) (make-pipe)])
         (parameterize ((current-output-port o))
@@ -126,26 +131,23 @@
 (define (exec-path prog . args)
 
   (define prog-path (path->string (find-executable-path (stringify prog))))
-  ;; (define arglist (map stringify args))
+  (define arglist (map stringify args))
 
-  (write prog)
-  (write args)
 
-  ;; (define-values (proc <-ch _ __)
+  (let ((prog-path (path->string (find-executable-path "ls")))
+        (arglist '()))
+
+    (define-values (p <-ch _ __)
+      (apply subprocess #f (current-input-port) #f prog-path arglist))
+
+    (current-input-port <-ch)
+    (for/list ((line (in-lines <-ch)))
+      line))
+
+  ;; (define-values (p <-ch out err)
   ;;   (apply subprocess #f #f #f prog-path arglist))
 
 
-  (define-values (p <-ch out err)
-    (apply subprocess #f #f #f prog-path (map stringify args)))
-
-
-  ;; (define-values (p <-ch out err)
-  ;;   (apply subprocess #f #f #f (path->string (find-executable-path (stringify prog))) (map stringify '(-a))))
-
-  ;;  (values proc <-ch)
-
-  (for/list ((line (in-lines <-ch)))
-    line)
 
 
 
@@ -161,8 +163,8 @@
 
 ;;; Test-cases
 ;;; ==========
-(define infile "ReadFromFile")
-(define errfile "Errfile")
+(define infile "Input.file")
+(define errfile "Err.file")
 (define-runtime-path skish-dir ".")
 
 (define (show stx)
