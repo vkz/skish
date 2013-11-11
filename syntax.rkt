@@ -134,23 +134,33 @@
   (define arglist (map stringify args))
 
 
-  (let ((prog-path (path->string (find-executable-path "ls")))
-        (arglist '()))
+  (define-values (p <-ch _ __)
+    (apply subprocess #f (current-input-port) #f prog-path arglist))
 
-    (define-values (p <-ch _ __)
-      (apply subprocess #f (current-input-port) #f prog-path arglist))
+  (current-input-port <-ch)
 
-    (current-input-port <-ch)
-    (for/list ((line (in-lines <-ch)))
-      line))
+  (printf "~nRun:~n~a~n"
+          (for/list ((line (in-lines <-ch)))
+            line))
+
+
+  ;; (let ((prog-path (path->string (find-executable-path "ls")))
+  ;;       (arglist '()))
+
+  ;;   (define-values (p <-ch _ __)
+  ;;     (apply subprocess #f (current-input-port) #f prog-path arglist))
+
+  ;;   (current-input-port <-ch)
+  ;;   (for/list ((line (in-lines <-ch)))
+  ;;     line))
 
   ;; (define-values (p <-ch out err)
   ;;   (apply subprocess #f #f #f prog-path arglist))
 
+  )
 
-
-
-
+(module+ test
+  (test #t 2 3)
   )
 
 (define (stringify dat)
@@ -168,22 +178,27 @@
 (define-runtime-path skish-dir ".")
 
 (define (show stx)
-  (printf "~n~a~n~a~nExpansion:~n~a"
+  (printf "~n~a~n~n~a~n~a~nExpansion:~n~a"
+          (list->string (build-list 75 (λ (n) #\_)))
           (pretty-format (syntax->datum stx))
           (list->string (build-list 75 (λ (n) #\_)))
           (pretty-format (syntax->datum (expand/hide stx '())))))
 
-(define (test1 stx)
+(define (test1 stx [run #f])
   (show stx)
-  (printf "~nResult:~n")
-  (eval-syntax stx))
+  (and run
+       (begin
+         ;;(printf "~nResult:~n")
+         (eval-syntax stx))))
 
 ;; (test) will run all cases in test-cases
 ;; (test 2 4 5) will run only these cases
-(define (test . nlist)
+(define (test run . nlist)
 
   (for/list ((n (in-list nlist)))
-    (test1 (list-ref test-cases n))))
+    (test1 (list-ref test-cases n) run)))
+
+(define test-show (curry test #f))
 
 (define test-cases
   (list
@@ -221,3 +236,11 @@
              (begin (display (read-line)))
              (cat))))
    ))
+
+
+(module+ test
+  ;; (test 3)
+
+  ;;  (test-show 2 3)
+
+  )
