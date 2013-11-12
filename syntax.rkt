@@ -97,23 +97,26 @@
 ;;; =====================
 
 (define shell-open (compose displayln list))
-;;(define fork/pipe (compose displayln list))
 
-
-;; ??? is it wise to assume in order execution  ???
-;; ??? or should all processes run concurrently ???
+;; this code assumes `in order' execution
+;; perhaps it should be concurrent [???]
 (define (fork/pipe stuff [inline? #f])
   (if inline?
 
-      ;; scheme (begin ...) form in a pipe
-      (let-values ([(i o) (make-pipe)])
-        (parameterize ((current-output-port o))
+      ;; [!HACK!] temporary file is never deleted but must be
+
+      ;; stuff is (begin ...)
+      ;; pipe its output back into
+      (let* ([tempfile (make-temporary-file)]
+             [tempin (open-input-file tempfile)]
+             [tempout (open-output-file tempfile #:exists 'truncate)])
+        (parameterize ((current-output-port tempout))
           (stuff)
-          (close-output-port o))
-        (current-input-port i))
-      ;;(begin (displayln "hello"))
-      ;;(wc)
-      ;; external binary i.e. stuff is (exec-path ...)
+          (close-output-port tempout))
+        (current-input-port tempin))
+
+      ;; stuff is (exec-path ...) i.e. external binary
+      ;; [FIX] pipe its output back into (current-input-port)
       (let-values ([(proc) (stuff)])
         (subprocess-wait proc))))
 
@@ -217,7 +220,7 @@
    ;;case6
    #'(exec-epf
       ((pipe (ls)
-             (begin (display (read-line)))
+             (begin (copy-port (current-input-port) (current-output-port)))
              (wc))))
 
    ;;case7
@@ -228,14 +231,13 @@
    ;;case8
    #'(exec-epf
       ((pipe (ls)
-             (begin (display (read-line)))
+             (begin (copy-port (current-input-port) (current-output-port)))
              )))
 
 
    ))
 
 (module+ test
-;;  (test 2 3 4 7)
-;;  (test/show 2)
-  (test 8)
+  (test 2 3 4 7)
+  (test 8 6)
   )
