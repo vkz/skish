@@ -14,7 +14,6 @@
   (wait (& . epf)))
 
 (begin-for-syntax
-
 ;;; ==================================================
 ;;; all transcribe- functions return syntax-objects
 ;;; ==================================================
@@ -56,8 +55,8 @@
      [ _                (raise-syntax-error #f "Illegal process form" pf)]))
 
  (define (transcribe-begin-process-form body)
-   ;;   #'(with-stdio-ports* (thunk . body))
    #`(begin #,@body))
+
  (define (transcribe-simple-pipeline pfs)
    (syntax-case pfs ()
      [(pf ...)
@@ -67,21 +66,9 @@
              (begin-form?
               (λ (f) (equal? 'begin (syntax->datum (car (syntax->list f))))))
              (fork-chunk
-              (λ (chunk) #`(fork/pipe (thunk #,chunk) (begin-form? chunk))))
+              (λ (chunk) #`(fork/pipe (thunk #,chunk) #,(begin-form? chunk))))
              (forkers (map fork-chunk first-pfs))]
         (blockify `(,@forkers ,last-pf)))]))
-
- ;; ;; syntax -> syntax
- ;; (define (transcribe-simple-pipeline pfs)
- ;;   (syntax-case pfs ()
- ;;     [(pf ...)
- ;;      (let* [(chunks (reverse (map transcribe-process-form (syntax->list #'(pf ...)))))
- ;;             (last-pf (car chunks))
- ;;             (first-pfs (reverse (cdr chunks)))
- ;;             (forkers (map (λ (chunk)
- ;;                              #`(fork/pipe (thunk #,chunk)))
- ;;                           first-pfs))]
- ;;        (blockify `(,@forkers ,last-pf)))]))
 
  (define (transcribe-redirection redir)
    (syntax-case redir (< > << >> = - stdports)
@@ -106,76 +93,73 @@
  ) ;begin-for-syntax
 
 ;;; =====================
-;;; Debugging and testing
+;;; Process machinery
 ;;; =====================
 
 (define shell-open (compose displayln list))
 ;;(define fork/pipe (compose displayln list))
 
+
+;; ??? is it wise to assume in order execution  ???
+;; ??? or should all processes run concurrently ???
 (define (fork/pipe stuff [inline? #f])
-
-  ;; another possibility is running (begin ..) code
-  ;; in a new Racket process (subprocess . . . "racket" "-e" ...)
-  ;; spawning another VM could be too much overhead
-
   (if inline?
+
+      ;; scheme (begin ...) form in a pipe
       (let-values ([(i o) (make-pipe)])
         (parameterize ((current-output-port o))
           (stuff)
           (close-output-port o))
         (current-input-port i))
+      ;;(begin (displayln "hello"))
+      ;;(wc)
+      ;; external binary i.e. stuff is (exec-path ...)
+      (let-values ([(proc) (stuff)])
+        (subprocess-wait proc))))
 
-      (let-values ([(proc <-ch) (stuff)])
-        (current-input-port <-ch))))
-
+;; execute external binary in a new OS process
+;; setting (current-input-port) to the child's output
+;; return subprocess
 (define (exec-path prog . args)
-
   (define prog-path (path->string (find-executable-path (stringify prog))))
   (define arglist (map stringify args))
-
-
-  (define-values (p <-ch _ __)
-    (apply subprocess #f (current-input-port) #f prog-path arglist))
-
+  (define-values
+    (proc <-ch _ __)
+    (apply subprocess
+           #f
+           (current-input-port)
+           (current-error-port)
+           prog-path
+           arglist))
+  ;; pipe the child's out into (current-input-port)
+  ;; this setting persists at the call site
   (current-input-port <-ch)
-
-  (printf "~nRun:~n~a~n"
-          (for/list ((line (in-lines <-ch)))
-            line))
-
-
-  ;; (let ((prog-path (path->string (find-executable-path "ls")))
-  ;;       (arglist '()))
-
-  ;;   (define-values (p <-ch _ __)
-  ;;     (apply subprocess #f (current-input-port) #f prog-path arglist))
-
-  ;;   (current-input-port <-ch)
-  ;;   (for/list ((line (in-lines <-ch)))
-  ;;     line))
-
-  ;; (define-values (p <-ch out err)
-  ;;   (apply subprocess #f #f #f prog-path arglist))
-
-  )
-
-(module+ test
-  (test #t 2 3)
-  )
+  proc)
 
 (define (stringify dat)
   (let ((o (open-output-string)))
     (display dat o)
     (get-output-string o)))
 
-;; (define (exec-path prog . rest)
-;;   (displayln (append (list "executing" prog) rest)))
-
-;;; Test-cases
-;;; ==========
+;;; =====================
+;;; Debugging and testing
+;;; =====================
 (define infile "Input.file")
 (define errfile "Err.file")
 (define-runtime-path skish-dir ".")
+
+;; Test output is of the form:
+;; ___________________________________________________________________________
+;;
+;; '(exec-epf ((\| (ls -a) (grep "rkt") (wc))))
+;; ___________________________________________________________________________
+;; Expansion:
+;; '(begin
+;;    (#%app fork/pipe (lambda () (#%app apply exec-path '(ls -a))) '#f)
+;;    (#%app fork/pipe (lambda () (#%app apply exec-path '(grep "rkt"))) '#f)
+;;    (#%app apply exec-path '(wc)))
+;; Run:
+;; 2       2      33
 
 (define (show stx)
   (printf "~n~a~n~n~a~n~a~nExpansion:~n~a"
@@ -184,21 +168,21 @@
           (list->string (build-list 75 (λ (n) #\_)))
           (pretty-format (syntax->datum (expand/hide stx '())))))
 
-(define (test1 stx [run #f])
+(define (test1 stx run)
   (show stx)
   (and run
        (begin
-         ;;(printf "~nResult:~n")
-         (eval-syntax stx))))
+         (printf "~nRun:~n")
+         (eval-syntax stx)
+         (copy-port (current-input-port) (current-output-port)))))
 
-;; (test) will run all cases in test-cases
-;; (test 2 4 5) will run only these cases
-(define (test run . nlist)
-
+;; (test 4 5) show expansion and run cases 4 and 5
+(define (test #:run [run #t] . nlist)
   (for/list ((n (in-list nlist)))
     (test1 (list-ref test-cases n) run)))
 
-(define test-show (curry test #f))
+;; (test/show 4 5) only show expansion
+(define test/show (curry test #:run #f))
 
 (define test-cases
   (list
@@ -223,7 +207,7 @@
 
    ;;case4
    #'(exec-epf
-      ((\| (ls -a) (grep "rkt"))))
+      ((\| (ls -a) (grep "rkt") (wc))))
 
    ;;case5
    #'(exec-epf
@@ -234,13 +218,24 @@
    #'(exec-epf
       ((pipe (ls)
              (begin (display (read-line)))
-             (cat))))
+             (wc))))
+
+   ;;case7
+   #'(exec-epf
+      ((pipe (ls -a) (wc))))
+
+
+   ;;case8
+   #'(exec-epf
+      ((pipe (ls)
+             (begin (display (read-line)))
+             )))
+
+
    ))
 
-
 (module+ test
-  ;; (test 3)
-
-  ;;  (test-show 2 3)
-
+;;  (test 2 3 4 7)
+;;  (test/show 2)
+  (test 8)
   )
